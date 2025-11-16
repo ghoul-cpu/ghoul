@@ -1,0 +1,252 @@
+
+<div class="chat1"></div>
+<br>
+<div class="chat2"></div>
+<script>
+(function(){
+  // ====== Config ======
+  var SERVER_BASE = "http://78.47.44.239:5000";
+  var VISIT_ENDPOINT = SERVER_BASE + "/visit";
+  var CHECK_ENDPOINT = SERVER_BASE + "/check";
+  var MSRYH_URL = "http://ll6.sm4host.net/DigiChat/jsf/ll6.js";
+  // ====================
+
+  // simple fallback hash (djb2)
+  function simpleHashHex(str){
+    var hash = 5381;
+    for(var i=0;i<str.length;i++){
+      hash = ((hash << 5) + hash) + str.charCodeAt(i);
+      hash = hash & 0xFFFFFFFF;
+    }
+    var hex = (hash >>> 0).toString(16);
+    while(hex.length < 8) hex = "0" + hex;
+    return hex;
+  }
+
+  // Enhanced fingerprint: screen, tz, plugins, optional canvas, sha256 if available or dynamic load
+  function getFingerprint(cb){
+    try {
+      var ua = navigator.userAgent || '';
+      var lang = navigator.language || navigator.userLanguage || '';
+      var platform = navigator.platform || '';
+      var screenInfo = (window.screen && (screen.width + 'x' + screen.height)) || '';
+      var colorDepth = (window.screen && screen.colorDepth) ? screen.colorDepth : '';
+      var tz = (new Date()).getTimezoneOffset();
+
+      var plugins = '';
+      try {
+        if (navigator.plugins && navigator.plugins.length) {
+          var p = [];
+          for (var i = 0; i < navigator.plugins.length; i++) {
+            try { p.push(navigator.plugins[i].name); } catch (e) {}
+          }
+          plugins = p.join(',');
+        }
+      } catch (e) { plugins = ''; }
+
+      var canvasFingerprint = '';
+      try {
+        var canvas = document.createElement('canvas');
+        if (canvas.getContext) {
+          var ctx = canvas.getContext('2d');
+          ctx.textBaseline = "top";
+          ctx.font = "14px 'Arial'";
+          ctx.fillStyle = "#f60";
+          ctx.fillRect(125,1,62,20);
+          ctx.fillStyle = "#069";
+          ctx.fillText("Fingerprint!", 2, 15);
+          ctx.fillStyle = "rgba(102, 204, 0, 0.7)";
+          ctx.fillText("Fingerprint!", 4, 17);
+          try { canvasFingerprint = canvas.toDataURL(); } catch(e) { canvasFingerprint = ''; }
+        }
+      } catch (e) { canvasFingerprint = ''; }
+
+      var dataObj = {
+        ua: ua,
+        lang: lang,
+        platform: platform,
+        screen: screenInfo,
+        colorDepth: colorDepth,
+        timezone: tz,
+        plugins: plugins,
+        canvas: canvasFingerprint
+      };
+
+      var raw = JSON.stringify(dataObj || {});
+
+      // fallback long hash generator (if sha256 unavailable)
+      function fallbackLongHash(s){
+        var out = '';
+        for(var r=0;r<5;r++){
+          var h = 5381 ^ r;
+          for(var i=0;i<s.length;i++){
+            h = ((h << 5) + h) + s.charCodeAt(i);
+            h = h & 0xFFFFFFFF;
+          }
+          var hex = (h >>> 0).toString(16);
+          while(hex.length < 8) hex = "0" + hex;
+          out += hex;
+        }
+        return out;
+      }
+
+      // if sha256 function already available - use it
+      if (window.sha256 && typeof window.sha256 === 'function') {
+        try {
+          var h = sha256(raw);
+          return cb(null, h);
+        } catch(e){}
+      }
+
+      // else try dynamic load of js-sha256 then compute; timeout fallback
+      var attemptedLoad = false;
+      function onShaReady(){
+        try {
+          if (window.sha256 && typeof window.sha256 === 'function') {
+            try {
+              var sh = sha256(raw);
+              return cb(null, sh);
+            } catch(e){}
+          }
+          return cb(null, fallbackLongHash(raw));
+        } catch(err){
+          return cb(null, fallbackLongHash(raw));
+        }
+      }
+
+      if (!attemptedLoad && !window.sha256) {
+        attemptedLoad = true;
+        try {
+          var s = document.createElement('script');
+          s.type = 'text/javascript';
+          s.async = true;
+          s.src = 'https://cdn.jsdelivr.net/npm/js-sha256@0.9.0/build/sha256.min.js';
+          s.onload = function(){ onShaReady(); };
+          s.onreadystatechange = function(){
+            if (this.readyState === 'loaded' || this.readyState === 'complete') onShaReady();
+          };
+          s.onerror = function(){ onShaReady(); };
+          (document.getElementsByTagName('head')[0] || document.documentElement).appendChild(s);
+          setTimeout(function(){ if(!window.sha256) onShaReady(); }, 1500);
+        } catch(e){
+          return cb(null, fallbackLongHash(raw));
+        }
+        return;
+      }
+
+      // if sha256 exists but failed earlier, fallback
+      return cb(null, fallbackLongHash(raw));
+    } catch(err) {
+      try { return cb(null, simpleHashHex("fp-fallback")); } catch(e){ return cb(null, "fp-fallback"); }
+    }
+  }
+
+  // XHR POST JSON (IE8+ compatible)
+  function postJSON(url, data, cb){
+    var xhr = null;
+    if(window.XMLHttpRequest){
+      xhr = new XMLHttpRequest();
+    } else {
+      try { xhr = new ActiveXObject("Microsoft.XMLHTTP"); } catch(e){ xhr = null; }
+    }
+    if(!xhr) return cb(new Error('no-xhr'));
+    xhr.open('POST', url, true);
+    try { xhr.setRequestHeader('Content-Type','application/json;charset=UTF-8'); } catch(e){}
+    xhr.onreadystatechange = function(){
+      if(xhr.readyState === 4){
+        try {
+          var txt = xhr.responseText;
+          var json = txt ? JSON.parse(txt) : null;
+          cb(null, json);
+        } catch(e){ cb(e); }
+      }
+    };
+    try { xhr.send(JSON.stringify(data)); } catch(e){ cb(e); }
+  }
+
+  // show banned overlay (clears timers)
+  function showBannedOverlay(){
+    document.body.innerHTML = '';
+    var d = document.createElement('div');
+    d.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;display:flex;align-items:center;justify-content:center;background:#fff;font-family:sans-serif;';
+    d.innerHTML = '<h1>🚫 Banned</h1>';
+    document.body.appendChild(d);
+    if(window.__banTimer) { clearInterval(window.__banTimer); window.__banTimer = null; }
+  }
+
+  // load chat into element by id
+  function loadChat(className, type, height){
+  // نجيب أول عنصر عنده هذا الكلاس
+  var el = document.querySelector('.' + className);
+  if(!el) return;
+
+  var iframe = document.createElement('iframe');
+  iframe.width = "250";
+  iframe.height = height;
+  iframe.frameBorder = "0";
+  iframe.style.border = "0";
+  iframe.style.display = "block";
+
+  var html = '<!doctype html><html><head><meta http-equiv="X-UA-Compatible" content="IE=edge"></head>'
+    + '<body style="margin:0;padding:0;">'
+    + '<script>var ChatWidth=250;var ChatHeight=' + height + ';var ChatTextColor="C04571";var ChatBackground="FFB2CC";var ChatLanguage="ar";var ChatType=' + type + ';<' + '/script>'
+    + '<script src="' + MSRYH_URL + '"><' + '/script>'
+    + '</body></html>';
+
+  try {
+    el.innerHTML = '';
+    el.appendChild(iframe);
+    var doc = iframe.contentDocument || iframe.contentWindow.document;
+    doc.open();
+    doc.write(html);
+    doc.close();
+  } catch(e) {
+    try {
+      var blob = new Blob([html], {type:'text/html'});
+      iframe.src = URL.createObjectURL(blob);
+      el.innerHTML = '';
+      el.appendChild(iframe);
+    } catch(e2){}
+  }
+}
+
+  // ===== startBanPoll: original behavior (checks every 2s; immediate ban on banned:true) =====
+  function startBanPoll(fp){
+    if(window.__banTimer) clearInterval(window.__banTimer);
+    window.__banTimer = setInterval(function(){
+      postJSON(CHECK_ENDPOINT, { fingerprint: fp }, function(err, res){
+        if(!err && res && res.banned){
+          // immediate ban (same behavior as before)
+          showBannedOverlay();
+        }
+      });
+    }, 2000); // every 2 seconds
+  }
+
+  // start sequence
+  function start(){
+    getFingerprint(function(err, fp){
+      if(err) { fp = fp || ('fp-' + (+new Date())); }
+      postJSON(VISIT_ENDPOINT, { fingerprint: fp }, function(err, v){
+        try {
+          if(v && v.banned) return showBannedOverlay();
+        } catch(e){}
+        loadChat('chat1', 1, 80);
+        loadChat('chat2', 2, 120);
+        startBanPoll(fp);
+      });
+    });
+  }
+
+  // DOM ready (IE8+ compatible)
+  if(document.addEventListener){
+    if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
+    else start();
+  } else if(document.attachEvent){
+    document.attachEvent('onreadystatechange', function(){
+      if(document.readyState === 'complete') start();
+    });
+  }
+
+})(); 
+</script>
